@@ -1,0 +1,111 @@
+blueprint:
+  name: Thermostat bei geöffnetem Fenster abschalten
+  description: >
+    Schaltet ein Thermostat aus, sobald ein Fenster geöffnet wird, und speichert
+    vorher dessen Zustand (Modus, Solltemperatur, Preset usw.).
+    Nach dem Schließen des Fensters wird die eingestellte Wartezeit abgewartet.
+    Ist das Fenster danach noch geschlossen und das Thermostat noch aus,
+    wird der gespeicherte Zustand wiederhergestellt.
+    Wurde das Thermostat in der Zwischenzeit manuell eingeschaltet,
+    wird nichts überschrieben.
+  domain: automation
+  min_version: 2024.10.0
+  input:
+    window_sensor:
+      name: Fenstersensor
+      description: Binärsensor, der "an" ist, wenn das Fenster geöffnet ist.
+      selector:
+        entity:
+          domain: binary_sensor
+    thermostat:
+      name: Thermostat
+      description: Das Thermostat (climate-Entität), das gesteuert werden soll.
+      selector:
+        entity:
+          domain: climate
+    wait_time:
+      name: Wartezeit nach dem Schließen
+      description: >
+        So lange muss das Fenster geschlossen bleiben, bevor der
+        vorherige Zustand des Thermostats wiederhergestellt wird.
+      default:
+        hours: 0
+        minutes: 5
+        seconds: 0
+      selector:
+        duration:
+
+# Bei erneutem Öffnen während der Wartezeit wird der laufende Durchlauf abgebrochen.
+mode: restart
+
+variables:
+  thermostat_entity: !input thermostat
+  # Eindeutige Scene-ID pro Thermostat, damit mehrere Instanzen sich nicht stören
+  scene_id: "window_open_backup_{{ thermostat_entity | replace('.', '_') }}"
+  scene_entity: "scene.{{ scene_id }}"
+
+triggers:
+  - trigger: state
+    entity_id: !input window_sensor
+    to: "on"
+    id: opened
+  - trigger: state
+    entity_id: !input window_sensor
+    to: "off"
+    for: !input wait_time
+    id: closed_wait
+
+actions:
+  - choose:
+      # --- Fenster wurde geöffnet ---
+      - conditions:
+          - condition: trigger
+            id: opened
+          # Nur sichern, wenn das Thermostat nicht schon aus ist
+          # (verhindert, dass beim erneuten Öffnen der "Aus"-Zustand gespeichert wird)
+          - condition: not
+            conditions:
+              - condition: state
+                entity_id: !input thermostat
+                state:
+                  - "off"
+                  - "unavailable"
+                  - "unknown"
+        sequence:
+          - action: scene.create
+            data:
+              scene_id: "{{ scene_id }}"
+              snapshot_entities:
+                - !input thermostat
+          - action: climate.turn_off
+            target:
+              entity_id: !input thermostat
+
+      # --- Fenster war die Wartezeit lang geschlossen ---
+      - conditions:
+          - condition: trigger
+            id: closed_wait
+          # Sicherheitscheck: Fenster ist wirklich noch geschlossen
+          - condition: state
+            entity_id: !input window_sensor
+            state: "off"
+        sequence:
+          # Nur wenn von dieser Automation ein Zustand gesichert wurde
+          - if:
+              - condition: template
+                value_template: >
+                  {{ scene_entity in (states.scene | map(attribute='entity_id') | list) }}
+            then:
+              # Nur wiederherstellen, wenn das Thermostat noch aus ist
+              - if:
+                  - condition: state
+                    entity_id: !input thermostat
+                    state: "off"
+                then:
+                  - action: scene.turn_on
+                    target:
+                      entity_id: "{{ scene_entity }}"
+              # Gesicherten Zustand aufräumen (auch wenn das Thermostat bereits an war)
+              - action: scene.delete
+                target:
+                  entity_id: "{{ scene_entity }}"
