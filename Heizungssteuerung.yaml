@@ -9,7 +9,7 @@ blueprint:
     Wurde das Thermostat in der Zwischenzeit manuell eingeschaltet,
     wird nichts überschrieben.
   domain: automation
-  min_version: 2024.10.0
+  min_version: 2026.1
   input:
     window_sensor:
       name: Fenstersensor
